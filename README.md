@@ -4,6 +4,65 @@
 
 ---
 
+## ✅ Performance Fixes Applied
+
+### 1. N+1 Query Problems - FIXED
+| Endpoint | Problem | Solution |
+|----------|---------|----------|
+| `GET /api/products` | Category loaded per product in loop | `Product::with('category')` |
+| `GET /api/orders` | Customer & items loaded per order | `Order::with(['customer', 'items'])` |
+| `GET /api/products/sales-report` | Nested N+1 (order → items → product) | `Order::with(['items.product', 'customer'])` |
+
+### 2. Redis Caching - IMPLEMENTED
+| Endpoint | Cache Key | TTL | Invalidation |
+|----------|-----------|-----|--------------|
+| `GET /api/products` | `products.page.{page}` | 5 min | On product create |
+| `GET /api/products/dashboard` | `dashboard.stats` | 5 min | On order create |
+
+### 3. Pagination - ADDED
+- All list endpoints now return 15 items per page
+- Uses Laravel's `paginate(15)` method
+- Response includes meta: total, count, current_page, total_pages
+
+### 4. Database Indexing - ADDED
+```sql
+-- products.name (for LIKE search)
+-- products.sold_count (for ORDER BY)
+-- orders.status (for WHERE filter)
+```
+
+### 5. SQL Injection Vulnerability - FIXED
+**Before:**
+```php
+DB::select("SELECT * FROM orders WHERE status = '$status'");
+```
+**After:**
+```php
+Order::where('status', $status)->paginate(15);
+```
+
+### 6. DB Transaction in Order Creation - ADDED
+- Wrapped entire order creation in `DB::transaction()`
+- Added `lockForUpdate()` to prevent race conditions
+- All-or-nothing guarantee for order + items
+
+### 7. Inefficient Counting - FIXED
+**Before:**
+```php
+Product::all()->count(); // Loads all rows into memory
+```
+**After:**
+```php
+Product::count(); // Single SQL COUNT query
+```
+
+### 8. API Resources - CREATED
+- `ProductResource` - Consistent product response format
+- `OrderResource` - Consistent order response format
+- `ProductCollection` - Paginated product list with meta
+
+---
+
 ## 📌 Task Overview
 
 This Laravel project is a simplified **POS (Point of Sale) backend** for Sherazi IT.
