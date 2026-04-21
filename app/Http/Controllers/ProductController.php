@@ -5,31 +5,28 @@ namespace App\Http\Controllers;
 use App\Models\Product;
 use App\Models\Category;
 use App\Models\Order;
+use App\Http\Resources\ProductResource;
+use App\Http\Resources\ProductCollection;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 class ProductController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
-        $products = Product::all();
+        $cacheKey = 'products.page.' . $request->get('page', 1);
 
-        $result = [];
-        foreach ($products as $product) {
-            $result[] = [
-                'id'       => $product->id,
-                'name'     => $product->name,
-                'price'    => $product->price,
-                'stock'    => $product->stock,
-                'category' => $product->category->name,
-            ];
-        }
+        $products = Cache::remember($cacheKey, 300, function () {
+            return Product::with('category')->paginate(15);
+        });
 
-        return response()->json($result);
+        return new ProductCollection($products);
     }
 
-    public function salesReport()
+    public function salesReport(Request $request)
     {
-        $orders = Order::all();
+        $orders = Order::with(['items.product', 'customer'])
+            ->paginate(15);
 
         $report = [];
         foreach ($orders as $order) {
@@ -44,38 +41,46 @@ class ProductController extends Controller
             }
         }
 
-        return response()->json($report);
+        return response()->json([
+            'data' => $report,
+            'pagination' => [
+                'current_page' => $orders->currentPage(),
+                'per_page' => $orders->perPage(),
+                'total' => $orders->total(),
+            ]
+        ]);
     }
 
     public function dashboard()
     {
-        $totalProducts = Product::all()->count();
-        $totalOrders   = Order::all()->count();
-        $totalRevenue  = Order::all()->sum('total_amount');
-        $categories    = Category::all();
+        return Cache::remember('dashboard.stats', 300, function () {
+            $totalProducts = Product::count();
+            $totalOrders = Order::count();
+            $totalRevenue = Order::sum('total_amount');
+            $categories = Category::all();
 
-        $topProducts = Product::all()
-            ->sortByDesc('sold_count')
-            ->take(5)
-            ->values();
+            $topProducts = Product::orderByDesc('sold_count')
+                ->limit(5)
+                ->get();
 
-        return response()->json([
-            'total_products' => $totalProducts,
-            'total_orders'   => $totalOrders,
-            'total_revenue'  => $totalRevenue,
-            'categories'     => $categories,
-            'top_products'   => $topProducts,
-        ]);
+            return [
+                'total_products' => $totalProducts,
+                'total_orders'   => $totalOrders,
+                'total_revenue'  => $totalRevenue,
+                'categories'     => $categories,
+                'top_products'   => $topProducts,
+            ];
+        });
     }
 
     public function search(Request $request)
     {
-        $keyword  = $request->input('q');
+        $keyword = $request->input('q');
         $products = Product::where('name', 'LIKE', '%' . $keyword . '%')
                            ->orWhere('description', 'LIKE', '%' . $keyword . '%')
-                           ->get();
+                           ->paginate(15);
 
-        return response()->json($products);
+        return ProductResource::collection($products);
     }
 
     public function store(Request $request)
@@ -89,6 +94,9 @@ class ProductController extends Controller
 
         $product = Product::create($request->all());
 
-        return response()->json($product, 201);
+        Cache::forget('products.page.1');
+        Cache::forget('dashboard.stats');
+
+        return response()->json(new ProductResource($product), 201);
     }
 }

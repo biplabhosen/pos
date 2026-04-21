@@ -5,8 +5,10 @@ namespace App\Http\Controllers;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
+use App\Http\Resources\OrderResource;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 
 class OrderController extends Controller
 {
@@ -14,66 +16,76 @@ class OrderController extends Controller
     {
         $request->validate([
             'customer_id' => 'required|exists:customers,id',
-            'items'       => 'required|array',
+            'items'       => 'required|array|min:1',
+            'items.*.product_id' => 'required|exists:products,id',
+            'items.*.quantity'   => 'required|integer|min:1',
         ]);
 
-        $totalAmount = 0;
+        try {
+            return DB::transaction(function () use ($request) {
+                $totalAmount = 0;
+                $createdItems = [];
 
-        $order = Order::create([
-            'customer_id'  => $request->customer_id,
-            'total_amount' => 0,
-            'status'       => 'pending',
-        ]);
+                $order = Order::create([
+                    'customer_id'  => $request->customer_id,
+                    'total_amount' => 0,
+                    'status'       => 'pending',
+                ]);
 
-        foreach ($request->items as $item) {
-            $product = Product::find($item['product_id']);
+                foreach ($request->items as $item) {
+                    $product = Product::lockForUpdate()->find($item['product_id']);
 
-            if (!$product || $product->stock < $item['quantity']) {
-                return response()->json(['error' => 'Product unavailable'], 422);
-            }
+                    if (!$product || $product->stock < $item['quantity']) {
+                        throw new \Exception('Product unavailable or insufficient stock');
+                    }
 
-            OrderItem::create([
-                'order_id'   => $order->id,
-                'product_id' => $item['product_id'],
-                'quantity'   => $item['quantity'],
-                'unit_price' => $product->price,
-            ]);
+                    $orderItem = OrderItem::create([
+                        'order_id'   => $order->id,
+                        'product_id' => $item['product_id'],
+                        'quantity'   => $item['quantity'],
+                        'unit_price' => $product->price,
+                    ]);
 
-            $product->decrement('stock', $item['quantity']);
+                    $product->decrement('stock', $item['quantity']);
+                    $product->increment('sold_count', $item['quantity']);
 
-            $totalAmount += $product->price * $item['quantity'];
+                    $totalAmount += $product->price * $item['quantity'];
+                    $createdItems[] = $orderItem;
+                }
+
+                $order->update(['total_amount' => $totalAmount]);
+
+                $order->load(['customer', 'items.product']);
+
+                Cache::forget('dashboard.stats');
+                Cache::forget('products.page.1');
+
+                return response()->json(new OrderResource($order), 201);
+            });
+        } catch (\Exception $e) {
+            return response()->json(['error' => $e->getMessage()], 422);
         }
-
-        $order->update(['total_amount' => $totalAmount]);
-
-        return response()->json($order, 201);
     }
 
     public function index()
     {
-        $orders = Order::all();
+        $orders = Order::with(['customer', 'items'])->paginate(15);
 
-        $data = [];
-        foreach ($orders as $order) {
-            $data[] = [
-                'id'          => $order->id,
-                'customer'    => $order->customer->name,
-                'total'       => $order->total_amount,
-                'status'      => $order->status,
-                'items_count' => $order->items->count(),
-                'created_at'  => $order->created_at,
-            ];
-        }
-
-        return response()->json($data);
+        return OrderResource::collection($orders);
     }
 
     public function filterByStatus(Request $request)
     {
+        $request->validate([
+            'status' => 'required|in:pending,completed,cancelled',
+        ]);
+
         $status = $request->input('status');
 
-        $orders = DB::select("SELECT * FROM orders WHERE status = '$status'");
+        $orders = Order::where('status', $status)
+            ->with(['customer', 'items'])
+            ->paginate(15);
 
-        return response()->json($orders);
+        return OrderResource::collection($orders);
     }
 }
