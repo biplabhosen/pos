@@ -18,3 +18,8 @@ Route::get('/products/sales-report', [ProductController::class, 'salesReport']);
 Route::get('/orders', [OrderController::class, 'index']);
 Route::post('/orders', [OrderController::class, 'store']);
 Route::get('/orders/filter', [OrderController::class, 'filterByStatus']);
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/admin/products', [ProductController::class, 'index']);
+    Route::post('/admin/orders', [OrderController::class, 'store']);
+});
